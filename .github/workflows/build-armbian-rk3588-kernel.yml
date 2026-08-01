@@ -108,8 +108,9 @@ jobs:
             BRANCH=${{ inputs.kernel_branch }} \
             RELEASE=${{ inputs.release }} \
             KERNEL_CONFIGURE=no \
-            ARTIFACT_USE_CACHE=no \
-            KERNEL_CONFIG_FRAGMENTS="userpatches/${{ env.KERNEL_CONFIG_FRAGMENT_FILE }}"
+            ARTIFACT_IGNORE_CACHE=yes \
+            CLEAN_LEVEL="make,debs" \
+            KERNEL_CONFIG_FRAGMENTS="${{ env.KERNEL_CONFIG_FRAGMENT_FILE }}"
 
       - name: 收集 deb 包
         run: |
