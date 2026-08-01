@@ -1,0 +1,124 @@
+# .github/workflows/build-armbian-rk3588-kernel-optimized.yml
+name: Build Armbian RK3588 Kernel (via armbian/build)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: '内核分支 (对应 Armbian 的 BRANCH)'
+        required: true
+        default: 'current'
+        type: choice
+        options:
+          - current
+          - vendor
+      board:
+        description: '目标板子'
+        required: true
+        default: 'rock5b'
+        type: string   # 常用: orangepi5, rock5b, nanopi-r5s 等
+
+env:
+  # armbian/build 官方仓库
+  BUILD_REPO: armbian/build
+  # 编译产物输出目录
+  OUT_DIR: /build/output
+  # 内核配置片段的文件名（放在 userpatches 中）
+  KERNEL_CONFIG_FRAGMENT: kernel-mptcp-bbr-docker.config
+
+jobs:
+  build-kernel:
+    name: 编译内核 (${{ inputs.board }} - ${{ inputs.kernel_branch }})
+    runs-on: ubuntu-24.04-arm   # 原生 arm64 运行器
+    steps:
+      - name: 安装基础依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget
+
+      - name: 检出 armbian/build
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BUILD_REPO }}
+          path: build
+
+      - name: 创建内核配置片段 (MPTCP + IPv6 + BBR + Docker)
+        run: |
+          mkdir -p build/userpatches
+          cat > build/userpatches/${{ env.KERNEL_CONFIG_FRAGMENT }} << 'EOF'
+          # IPv6
+          CONFIG_IPV6=y
+
+          # MPTCP + IPv6
+          CONFIG_MPTCP=y
+          CONFIG_MPTCP_IPV6=y
+          CONFIG_MPTCP_PM_ADVANCED=y
+          CONFIG_MPTCP_FULLMESH=y
+          CONFIG_MPTCP_NDIFFPORTS=y
+          CONFIG_MPTCP_BINDER=y
+          CONFIG_MPTCP_NETLINK=y
+          CONFIG_MPTCP_SCHED_ADVANCED=y
+          CONFIG_MPTCP_BLEST=y
+          CONFIG_MPTCP_ROUNDROBIN=y
+          CONFIG_MPTCP_ECF=y
+          CONFIG_INET_MPTCP_DIAG=y
+
+          # BBR
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_DEFAULT_TCP_CONG="bbr"
+
+          EOF
+
+      - name: 配置构建参数并仅编译内核
+        run: |
+          cd build
+          cat > config-docker.conf << CONFIG_EOF
+          # 关键：只编译内核，不生成完整镜像
+          KERNEL_ONLY=yes
+          KERNEL_CONFIGURE=no
+
+          # 使用自定义内核 config 片段（自动与 Armbian 默认 defconfig 合并）
+          KERNEL_CONFIG_FRAGMENTS="${GITHUB_WORKSPACE}/build/userpatches/${{ env.KERNEL_CONFIG_FRAGMENT }}"
+
+          # 选择板子和分支
+          BOARD=${{ inputs.board }}
+          BRANCH=${{ inputs.kernel_branch }}
+
+          # 若 vendor 分支默认是 5.10，可以保持；若需要强制可设置
+          # KERNELBRANCH="tag:v5.10.160-rk35xx"  # 例如 vendor 特定标签
+          CONFIG_EOF
+
+      - name: 运行 Armbian 内核构建
+        run: |
+          cd build
+          # 使用 Docker 容器运行，环境完全隔离且依赖完备
+          sudo ./compile.sh docker config-docker.conf
+
+      - name: 收集内核 deb 包
+        run: |
+          echo "内核编译完成，收集 deb 文件："
+          find ${{ github.workspace }}/build/output/debs/ -name 'linux-*.deb' -ls
+          # 将所有内核包复制到工作区根目录，方便后续上传
+          cp ${{ github.workspace }}/build/output/debs/linux-*.deb ${{ github.workspace }}/
+
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kernel-${{ inputs.kernel_branch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: "Armbian RK3588 内核 (${{ inputs.board }}, ${{ inputs.kernel_branch }})"
+          body: |
+            - 使用 armbian/build 编译
+            - 板子: ${{ inputs.board }}
+            - 内核分支: ${{ inputs.kernel_branch }}
+            - 已启用: MPTCP 全部功能 (含 IPv6)、BBR、Docker 支持
+            - 仅内核 deb 包，安装命令：`dpkg -i linux-image-*.deb linux-headers-*.deb`
+          files: |
+            ${{ github.workspace }}/linux-*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 保留编译产物（Artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: armbian-rk3588-kernel-${{ inputs.board }}-${{ inputs.kernel_branch }}
+          path: ${{ github.workspace }}/linux-*.deb
