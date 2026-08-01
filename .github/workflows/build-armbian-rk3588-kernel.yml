@@ -78,7 +78,7 @@ jobs:
       - name: 运行 Armbian 内核构建 (Docker 模式)
         run: |
           cd build
-          sudo ./compile.sh docker \
+          sudo ./compile.sh \
             BOARD=${{ inputs.board }} \
             BRANCH=${{ inputs.kernel_branch }} \
             KERNEL_ONLY=yes \
