@@ -13,10 +13,19 @@ on:
           - current
           - vendor
       board:
-        description: '目标板子'
+        description: '目标板子 (Armbian BOARD 名称，例如 rock-5b, orangepi5, nanopi-r5s)'
         required: true
-        default: 'orangepi5'
+        default: 'rock-5b'
         type: string
+      release:
+        description: '发行版基 (仅用于跳过交互，不影响内核配置)'
+        required: true
+        default: 'noble'
+        type: choice
+        options:
+          - noble
+          - trixie
+          - resolute
 
 env:
   BUILD_REPO: armbian/build
@@ -75,12 +84,13 @@ jobs:
           KERNEL_CONFIG_FRAGMENTS="userpatches/${{ env.KERNEL_CONFIG_FRAGMENT_FILE }}"
           CONFEOF
 
-      - name: 运行 Armbian 内核构建 (Docker 模式)
+      - name: 运行 Armbian 内核构建
         run: |
           cd build
           sudo ./compile.sh \
             BOARD=${{ inputs.board }} \
             BRANCH=${{ inputs.kernel_branch }} \
+            RELEASE=${{ inputs.release }} \
             KERNEL_ONLY=yes \
             KERNEL_CONFIGURE=no \
             KERNEL_CONFIG_FRAGMENTS="userpatches/${{ env.KERNEL_CONFIG_FRAGMENT_FILE }}"
@@ -100,6 +110,7 @@ jobs:
             - 使用 armbian/build 编译
             - 板子: ${{ inputs.board }}
             - 内核分支: ${{ inputs.kernel_branch }}
+            - 发行版基: ${{ inputs.release }}
             - 已启用: MPTCP 全部功能 (含 IPv6)、BBR、Docker 支持
             - 仅内核 deb 包，安装命令：`dpkg -i linux-image-*.deb linux-headers-*.deb`
           files: |
