@@ -103,14 +103,23 @@ jobs:
       - name: 编译内核（禁用缓存，强制源码构建）
         run: |
           cd build
+          
+          # 核心修复：直接将你的自定义配置追加到 Armbian 默认的配置文件末尾
+          # Linux 内核编译(make defconfig)的特性是：文件末尾的配置优先级最高，会覆盖前面的设置
+          cat userpatches/${{ env.KERNEL_CONFIG_FRAGMENT_FILE }} >> config/kernel/linux-rockchip64-${{ inputs.kernel_branch }}.config
+          
+          # 验证是否成功追加
+          echo "==== 检查合并后的配置文件 ===="
+          tail -n 30 config/kernel/linux-rockchip64-${{ inputs.kernel_branch }}.config
+          
           sudo ./compile.sh kernel \
             BOARD=${{ inputs.board }} \
             BRANCH=${{ inputs.kernel_branch }} \
             RELEASE=${{ inputs.release }} \
             KERNEL_CONFIGURE=no \
             ARTIFACT_IGNORE_CACHE=yes \
-            CLEAN_LEVEL="make,debs" \
-            KERNEL_CONFIG_FRAGMENTS="${{ env.KERNEL_CONFIG_FRAGMENT_FILE }}"
+            IGNORE_UPDATES=yes \
+            CLEAN_LEVEL="make,debs"
 
       - name: 收集 deb 包
         run: |
