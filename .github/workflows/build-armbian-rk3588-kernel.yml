@@ -18,7 +18,7 @@ on:
         default: 'rock-5b'
         type: string
       release:
-        description: '发行版基 (仅用于跳过交互，不影响内核)'
+        description: '发行版基 (仅用于跳过交互，内核编译仍需要此参数)'
         required: true
         default: 'trixie'
         type: choice
@@ -84,19 +84,15 @@ jobs:
           KERNEL_CONFIG_FRAGMENTS="userpatches/${{ env.KERNEL_CONFIG_FRAGMENT_FILE }}"
           CONFEOF
 
-      - name: 运行 Armbian 内核构建
+      - name: 运行 Armbian 内核构建 (新内核子命令)
         run: |
           cd build
-          # 注意：即使 KERNEL_ONLY=yes，仍需显式禁止桌面镜像的交互选项
-          sudo ./compile.sh \
+          # 新版命令：使用 `./compile.sh kernel` 替代 `KERNEL_ONLY=yes`
+          sudo ./compile.sh kernel \
             BOARD=${{ inputs.board }} \
             BRANCH=${{ inputs.kernel_branch }} \
             RELEASE=${{ inputs.release }} \
-            KERNEL_ONLY=yes \
             KERNEL_CONFIGURE=no \
-            BUILD_DESKTOP=no \
-            BUILD_MINIMAL=no \
-            INSTALL_HEADERS=yes \
             KERNEL_CONFIG_FRAGMENTS="userpatches/${{ env.KERNEL_CONFIG_FRAGMENT_FILE }}"
 
       - name: 收集内核 deb 包
