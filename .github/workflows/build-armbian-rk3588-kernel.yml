@@ -24,9 +24,11 @@ on:
         default: "trixie"
         type: choice
         options:
-          - noble
+          - bookworm
           - trixie
-          - resolute
+          - sid
+          - jammy
+          - noble
 
 permissions:
   contents: write
@@ -57,21 +59,13 @@ jobs:
       - name: 编译内核（禁用缓存，强制源码构建）
         run: |
           mkdir -p build/userpatches
-          cat userpatches/comm.config > build/userpatches/linux-rockchip64-current.config
-          cat userpatches/comm.config > build/userpatches/linux-rockchip64-edge.config
-          cat userpatches/comm.config > build/userpatches/linux-seeed-rk3588-vendor.config
-          cat userpatches/comm.config > build/userpatches/linux-rockchip-rk3588-edge.config
-          cat userpatches/comm.config > build/userpatches/linux-rockchip-rk3588-current.config
+          cat userpatches/comm.config >> build/config/kernel/linux-rockchip64-current.config
+          cat userpatches/comm.config >> build/config/kernel/linux-rockchip64-edge.config
+          cat userpatches/comm.config >> build/config/kernel/linux-seeed-rk3588-vendor.config
+          cat userpatches/comm.config >> build/config/kernel/linux-rockchip-rk3588-edge.config
+          cat userpatches/comm.config >> build/config/kernel/linux-rockchip-rk3588-current.config
 
           cd build
-
-          # 核心修复：直接将你的自定义配置追加到 Armbian 默认的配置文件末尾
-          # Linux 内核编译(make defconfig)的特性是：文件末尾的配置优先级最高，会覆盖前面的设置
-          # cat userpatches/${{ env.KERNEL_CONFIG_FRAGMENT_FILE }} >> config/kernel/linux-rockchip64-${{ inputs.kernel_branch }}.config
-
-          # 验证是否成功追加
-          # echo "==== 检查合并后的配置文件 ===="
-          # tail -n 30 config/kernel/linux-rockchip64-${{ inputs.kernel_branch }}.config
 
           sudo ./compile.sh kernel \
             BOARD=${{ inputs.board }} \
