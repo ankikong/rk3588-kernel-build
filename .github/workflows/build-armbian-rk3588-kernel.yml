@@ -12,8 +12,9 @@ on:
         options:
           - current
           - vendor
+          - edge
       board:
-        description: '目标板子 (Armbian BOARD 名称)'
+        description: '目标板子 (Armbian BOARD 名称，如 rock-5b, orangepi5)'
         required: true
         default: 'rock-5b'
         type: string
@@ -32,7 +33,7 @@ permissions:
 
 env:
   BUILD_REPO: armbian/build
-  KERNEL_CONFIG_FRAGMENT_FILE: kernel-mptcp-bbr-docker.config
+  KERNEL_CONFIG_FRAGMENT_FILE: linux-${{ inputs.board }}-${{ inputs.kernel_branch }}.config
 
 jobs:
   build-kernel:
