@@ -1,21 +1,26 @@
-name: Build Ubuntu 24.04 Unsigned Kernel
+name: Build Custom Ubuntu Generic Kernel
 
 on:
   workflow_dispatch:
     inputs:
-      kernel_tag:
-        description: "Ubuntu Kernel Git Tag (e.g., Ubuntu-6.8.0-136.136)"
+      ubuntu_version:
+        description: 'Select Target Ubuntu Version (Runner)'
         required: true
-        default: "Ubuntu-6.8.0-136.136"
+        default: 'ubuntu-24.04'
+        type: choice
+        options:
+          - ubuntu-24.04
+          - ubuntu-22.04
+          - ubuntu-20.04
 
 jobs:
   build-kernel:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.event.inputs.ubuntu_version }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 1. 清理运行器磁盘空间
+      # 1. 释放磁盘空间
       - name: Free Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -25,18 +30,54 @@ jobs:
           sudo docker image prune --all --force
           df -h
 
-      # 2. 启用 Source 源
+      # 2. 启用 Source 源码源并更新包缓存
       - name: Enable Source Repositories
         run: |
-          sudo sed -i 's/Types: deb/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            # 适用于 Ubuntu 24.04+ (DEB822 格式)
+            sudo sed -i 's/Types: deb/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          else
+            # 适用于 Ubuntu 22.04 及更早版本 (传统格式)
+            sudo sed -i 's/# deb-src/deb-src/g' /etc/apt/sources.list
+          fi
           sudo apt-get update
 
-      # 3. 安装编译依赖包
+      # 3. 解析最新 linux-image-generic 的依赖，并直接拉取对应源码（无需本地安装内核）
+      - name: Fetch Kernel Source via APT
+        run: |
+          # 提取远程仓库中最新 linux-image-generic 依赖的具体内核二进制包名
+          KERNEL_DEP=$(apt-cache depends linux-image-generic | grep -o 'linux-image-[0-9]\+.*-generic' | head -n 1)
+          
+          if [ -z "$KERNEL_DEP" ]; then
+            echo "警告：无法通过依赖关系提取具体内核包，回退到拉取默认的 linux 源码包"
+            KERNEL_DEP="linux"
+          else
+            echo "最新 linux-image-generic 指向的具体内核包为: $KERNEL_DEP"
+          fi
+          
+          # 直接下载该二进制包对应的内核源码包并解压
+          apt-get source "$KERNEL_DEP" || apt-get source linux
+          
+          # 定位解压出的源码目录并重命名统一管理
+          SRC_DIR=$(find . -maxdepth 1 -type d -name "linux-*" | head -n 1)
+          if [ -z "$SRC_DIR" ]; then
+            echo "错误：未能成功获取到解压后的内核源码"
+            exit 1
+          fi
+          echo "成功定位源码路径: $SRC_DIR"
+          mv "$SRC_DIR" kernel-source
+
+      # 4. 安装对应的编译依赖项
       - name: Install Build Dependencies
         run: |
+          KERNEL_DEP=$(apt-cache depends linux-image-generic | grep -o 'linux-image-[0-9]\+.*-generic' | head -n 1)
+          if [ -n "$KERNEL_DEP" ]; then
+            sudo apt-get build-dep -y "$KERNEL_DEP" || true
+          fi
           sudo apt-get build-dep -y linux || true
+          
+          # 补充必装编译工具
           sudo apt-get install -y \
-            git \
             fakeroot \
             build-essential \
             libncurses-dev \
@@ -59,26 +100,19 @@ jobs:
             dpkg-dev \
             bc
 
-      # 4. 克隆源码
-      - name: Clone Ubuntu Kernel Source
-        run: |
-          git clone --depth 1 --branch ${{ github.event.inputs.kernel_tag }} https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble linux-noble
-
-      # 5. 配置参数（注入 custom.config 并应用）
+      # 5. 注入配置（兼容新旧版本的 annotations/模板配置机制）
       - name: Configure Kernel Options
-        working-directory: linux-noble
+        working-directory: kernel-source
         run: |
           chmod a+x debian/rules
-          chmod a+x debian/scripts/*
-          chmod a+x debian/scripts/misc/*
+          chmod a+x debian/scripts/* 2>/dev/null || true
+          chmod a+x debian/scripts/misc/* 2>/dev/null || true
 
-          # 变更编译输出的版本号后缀以防与官方包冲突
+          # 修改编译版本后缀，避免与系统原生内核冲突
           sed -i 's/)/+custom-config)/' debian.master/changelog
-
-          cat userpatches/comm.config >> custom.config
-
+          cat ../userpatches/comm.config >> custom.config
           if [ -f ../custom.config ]; then
-            echo "检测到 custom.config，开始应用..."
+            echo "解析 custom.config 中..."
             while IFS='=' read -r key value || [ -n "$key" ]; do
               key=$(echo "$key" | xargs)
               value=$(echo "$value" | xargs)
@@ -88,46 +122,58 @@ jobs:
                 continue
               fi
 
-              echo "正在注入配置: $key = $value"
-              ./debian/scripts/misc/annotations --arch amd64 --flavour generic --config "$key" --write "$value" --note "Custom config"
+              # 如果存在 annotations 脚本（新版 Ubuntu），则使用官方脚本注入
+              if [ -f ./debian/scripts/misc/annotations ]; then
+                echo "[Annotations] 注入: $key = $value"
+                ./debian/scripts/misc/annotations --arch amd64 --flavour generic --config "$key" --write "$value" --note "Custom config"
+              else
+                # 否则（旧版 Ubuntu），直接修改对应的底层模板配置文件
+                CONFIG_FILE=""
+                if [ -f debian.master/config/amd64/config.flavour.generic ]; then
+                  CONFIG_FILE="debian.master/config/amd64/config.flavour.generic"
+                elif [ -f debian/config/amd64/config.flavour.generic ]; then
+                  CONFIG_FILE="debian/config/amd64/config.flavour.generic"
+                fi
+                
+                if [ -n "$CONFIG_FILE" ]; then
+                  echo "[Config Template] 注入 $CONFIG_FILE: $key = $value"
+                  sed -i "/$key/d" "$CONFIG_FILE"
+                  echo "$key=$value" >> "$CONFIG_FILE"
+                else
+                  echo "警告：无法定位内核配置模板文件，请检查源码目录结构。"
+                fi
+              fi
             done < ../custom.config
           else
-            echo "错误：未找到 custom.config，请先在仓库根目录创建它。"
+            echo "错误：未在仓库根目录找到 custom.config 文件！"
             exit 1
           fi
 
-          # 重新生成并应用配置
+          # 重新编译配置文件
           fakeroot debian/rules clean
           fakeroot debian/rules genconfigs
 
-      # 6. 编译内核软件包
+      # 6. 编译内核二进制包
       - name: Build Kernel Packages
-        working-directory: linux-noble
+        working-directory: kernel-source
         run: |
           export CONCURRENCY_LEVEL=$(nproc)
           fakeroot debian/rules binary-headers binary-generic binary-perarch skipabi=true skipmodule=true skipdbg=true
 
-      # 7. 精确收集产物（仅提取 headers, image, modules）
+      # 7. 精确提取 headers, image, modules 产物
       - name: Collect Debian Packages
         run: |
           mkdir -p output
-
-          # 1. 移入内核头文件包 (linux-headers-*)
           mv ../linux-headers-*.deb output/ 2>/dev/null || true
-
-          # 2. 移入未签名的内核映像包 (linux-image-unsigned-*)
-          # 官方 fakeroot 构建出的就是带有 unsigned 标识的无签名 image
           mv ../linux-image-unsigned-*.deb output/ 2>/dev/null || true
-
-          # 3. 移入内核模块包 (linux-modules-*)，包含常规 modules 以及 modules-extra
+          mv ../linux-image-*.deb output/ 2>/dev/null || true
           mv ../linux-modules-*.deb output/ 2>/dev/null || true
-
           echo "==== 已收集的目标安装包 ===="
           ls -lh output/
 
-      # 8. 上传目标工件
+      # 8. 上传构建结果
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-kernel-debs
+          name: ${{ github.event.inputs.ubuntu_version }}-kernel-debs
           path: output/*.deb
