@@ -109,7 +109,7 @@ jobs:
           chmod a+x debian/scripts/misc/* 2>/dev/null || true
 
           # 修改编译版本后缀，避免与系统原生内核冲突
-          sed -i 's/)/+custom-config)/' debian.master/changelog
+          # sed -i 's/)/+custom-config)/' debian.master/changelog
           cat ../userpatches/comm.config >> custom.config
           if [ -f ../custom.config ]; then
             echo "解析 custom.config 中..."
