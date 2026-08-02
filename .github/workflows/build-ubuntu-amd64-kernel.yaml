@@ -42,20 +42,23 @@ jobs:
           fi
           sudo apt-get update
 
-      # 3. 解析最新 linux-image-generic 的依赖，并直接拉取对应源码（无需本地安装内核）
+      # 3. 动态解析最新 linux-image-generic 的依赖，并拉取真正的未签名内核源码包
       - name: Fetch Kernel Source via APT
         run: |
-          # 提取远程仓库中最新 linux-image-generic 依赖的具体内核二进制包名
+          # 提取当前仓库中最新 linux-image-generic 依赖的具体内核二进制包名
           KERNEL_DEP=$(apt-cache depends linux-image-generic | grep -o 'linux-image-[0-9]\+.*-generic' | head -n 1)
           
           if [ -z "$KERNEL_DEP" ]; then
             echo "警告：无法通过依赖关系提取具体内核包，回退到拉取默认的 linux 源码包"
             KERNEL_DEP="linux"
           else
-            echo "最新 linux-image-generic 指向的具体内核包为: $KERNEL_DEP"
+            # 关键修复：将已签名的包名转为 unsigned 的包名（例如：linux-image-6.8.0-136-generic -> linux-image-unsigned-6.8.0-136-generic）
+            # 这样才能强制 apt-get source 去拉取真实的 "linux" 源码包，而不是重签名包 "linux-signed"
+            KERNEL_DEP=$(echo "$KERNEL_DEP" | sed 's/linux-image-\([0-9]\)/linux-image-unsigned-\1/')
+            echo "最新 generic 内核指向的真实源码包为: $KERNEL_DEP"
           fi
           
-          # 直接下载该二进制包对应的内核源码包并解压
+          # 直接下载对应的未签名内核源码包并自动解压
           apt-get source "$KERNEL_DEP" || apt-get source linux
           
           # 定位解压出的源码目录并重命名统一管理
@@ -67,12 +70,14 @@ jobs:
           echo "成功定位源码路径: $SRC_DIR"
           mv "$SRC_DIR" kernel-source
 
-      # 4. 安装对应的编译依赖项
+      # 4. 基于未签名的真实内核包拉取编译依赖
       - name: Install Build Dependencies
         run: |
           KERNEL_DEP=$(apt-cache depends linux-image-generic | grep -o 'linux-image-[0-9]\+.*-generic' | head -n 1)
           if [ -n "$KERNEL_DEP" ]; then
-            sudo apt-get build-dep -y "$KERNEL_DEP" || true
+            # 转换为 unsigned 版本以拉取正确的构建依赖
+            KERNEL_UNSIGNED_DEP=$(echo "$KERNEL_DEP" | sed 's/linux-image-\([0-9]\)/linux-image-unsigned-\1/')
+            sudo apt-get build-dep -y "$KERNEL_UNSIGNED_DEP" || true
           fi
           sudo apt-get build-dep -y linux || true
           
@@ -100,7 +105,7 @@ jobs:
             dpkg-dev \
             bc
 
-      # 5. 注入配置（兼容新旧版本的 annotations/模板配置机制）
+      # 5. 注入配置（此时有了完整的 kernel-source，该目录已包含模板文件及 annotations 脚本）
       - name: Configure Kernel Options
         working-directory: kernel-source
         run: |
@@ -149,7 +154,7 @@ jobs:
             exit 1
           fi
 
-          # 重新编译配置文件
+          # 重新编译配置文件（由于这是真实的内核源码树，此处 genconfigs 规则已被正确支持）
           fakeroot debian/rules clean
           fakeroot debian/rules genconfigs
 
