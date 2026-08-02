@@ -1,0 +1,133 @@
+name: Build Ubuntu 24.04 Unsigned Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_tag:
+        description: "Ubuntu Kernel Git Tag (e.g., Ubuntu-6.8.0-136.136)"
+        required: true
+        default: "Ubuntu-6.8.0-136.136"
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. 清理运行器磁盘空间
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
+      # 2. 启用 Source 源
+      - name: Enable Source Repositories
+        run: |
+          sudo sed -i 's/Types: deb/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+
+      # 3. 安装编译依赖包
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get build-dep -y linux || true
+          sudo apt-get install -y \
+            git \
+            fakeroot \
+            build-essential \
+            libncurses-dev \
+            gawk \
+            flex \
+            bison \
+            openssl \
+            libssl-dev \
+            dkms \
+            libelf-dev \
+            libudev-dev \
+            libpci-dev \
+            libiberty-dev \
+            autoconf \
+            llvm \
+            dwarves \
+            zstd \
+            rsync \
+            debhelper \
+            dpkg-dev \
+            bc
+
+      # 4. 克隆源码
+      - name: Clone Ubuntu Kernel Source
+        run: |
+          git clone --depth 1 --branch ${{ github.event.inputs.kernel_tag }} https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/noble linux-noble
+
+      # 5. 配置参数（注入 custom.config 并应用）
+      - name: Configure Kernel Options
+        working-directory: linux-noble
+        run: |
+          chmod a+x debian/rules
+          chmod a+x debian/scripts/*
+          chmod a+x debian/scripts/misc/*
+
+          # 变更编译输出的版本号后缀以防与官方包冲突
+          sed -i 's/)/+custom-config)/' debian.master/changelog
+
+          cat userpatches/comm.config >> custom.config
+
+          if [ -f ../custom.config ]; then
+            echo "检测到 custom.config，开始应用..."
+            while IFS='=' read -r key value || [ -n "$key" ]; do
+              key=$(echo "$key" | xargs)
+              value=$(echo "$value" | xargs)
+              value=$(echo "$value" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+
+              if [[ -z "$key" || "$key" =~ ^# ]]; then
+                continue
+              fi
+
+              echo "正在注入配置: $key = $value"
+              ./debian/scripts/misc/annotations --arch amd64 --flavour generic --config "$key" --write "$value" --note "Custom config"
+            done < ../custom.config
+          else
+            echo "错误：未找到 custom.config，请先在仓库根目录创建它。"
+            exit 1
+          fi
+
+          # 重新生成并应用配置
+          fakeroot debian/rules clean
+          fakeroot debian/rules genconfigs
+
+      # 6. 编译内核软件包
+      - name: Build Kernel Packages
+        working-directory: linux-noble
+        run: |
+          export CONCURRENCY_LEVEL=$(nproc)
+          fakeroot debian/rules binary-headers binary-generic binary-perarch skipabi=true skipmodule=true skipdbg=true
+
+      # 7. 精确收集产物（仅提取 headers, image, modules）
+      - name: Collect Debian Packages
+        run: |
+          mkdir -p output
+
+          # 1. 移入内核头文件包 (linux-headers-*)
+          mv ../linux-headers-*.deb output/ 2>/dev/null || true
+
+          # 2. 移入未签名的内核映像包 (linux-image-unsigned-*)
+          # 官方 fakeroot 构建出的就是带有 unsigned 标识的无签名 image
+          mv ../linux-image-unsigned-*.deb output/ 2>/dev/null || true
+
+          # 3. 移入内核模块包 (linux-modules-*)，包含常规 modules 以及 modules-extra
+          mv ../linux-modules-*.deb output/ 2>/dev/null || true
+
+          echo "==== 已收集的目标安装包 ===="
+          ls -lh output/
+
+      # 8. 上传目标工件
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-kernel-debs
+          path: output/*.deb
