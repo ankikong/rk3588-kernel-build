@@ -52,7 +52,7 @@ jobs:
             echo "警告：无法通过依赖关系提取具体内核包，回退到拉取默认的 linux 源码包"
             KERNEL_DEP="linux"
           else
-            # 将已签名的包名转为 unsigned 的包名，确保拉取包含完整编译规则的原始源码包
+            # 修复：将已签名的包名转为 unsigned 的包名（例如：linux-image-6.8.0-136-generic -> linux-image-unsigned-6.8.0-136-generic）
             KERNEL_DEP=$(echo "$KERNEL_DEP" | sed 's/linux-image-\([0-9]\)/linux-image-unsigned-\1/')
             echo "最新 generic 内核指向的真实源码包为: $KERNEL_DEP"
           fi
@@ -103,7 +103,7 @@ jobs:
             dpkg-dev \
             bc
 
-      # 5. 限制构建架构并注入配置
+      # 5. 限制构建架构、修剪 annotations 并注入配置
       - name: Configure Kernel Options
         working-directory: kernel-source
         run: |
@@ -115,15 +115,24 @@ jobs:
           # sed -i 's/)/+custom-config)/' debian.master/changelog
           cat ../userpatches/comm.config >> custom.config
 
-          # ================== 核心修复 1: 限制只针对 amd64 生成配置 ==================
-          # 修改 Ubuntu 构建系统的架构模板文件，彻底排除 arm64, armhf, ppc64el 等
+          # 限制只针对 amd64 生成配置
           for config_path in debian.master/etc/kernelconfig debian/etc/kernelconfig; do
             if [ -f "$config_path" ]; then
               echo "正在修改 $config_path，设定 archs=amd64 ..."
               echo 'archs="amd64"' > "$config_path"
             fi
           done
-          # ===========================================================================
+
+          # ================== 核心修复 2: 修剪 annotations 中的 FLAVOUR 声明 ==================
+          # 通过 sed 命令过滤 annotations，只保留含有 amd64 的 Flavour。
+          # 这将阻止构建系统去非 native 架构下寻找 cross-compiler，从根本上避开 warning_partial 报错。
+          for anno_path in debian.master/config/annotations debian/config/annotations; do
+            if [ -f "$anno_path" ]; then
+              echo "正在修改 $anno_path，移除除 amd64 之外的所有 FLAVOUR 声明..."
+              sed -i '/^# FLAVOUR: / { /amd64/!d }' "$anno_path"
+            fi
+          done
+          # ====================================================================================
 
           if [ -f ../custom.config ]; then
             echo "解析 custom.config 中..."
@@ -163,7 +172,7 @@ jobs:
             exit 1
           fi
 
-          # 重新编译配置文件，并加入 do_skip_checks=true 规避多架构验证机制的严格性静态检查
+          # 重新编译配置文件，配合 skip_checks 跳过验证
           fakeroot debian/rules clean
           fakeroot debian/rules genconfigs do_skip_checks=true
 
@@ -172,7 +181,7 @@ jobs:
         working-directory: kernel-source
         run: |
           export CONCURRENCY_LEVEL=$(nproc)
-          # 显式加入 do_skip_checks=true 以绕过未参与编译的其他架构静态完整性检查
+          # 显式加入 do_skip_checks=true 以绕过静态完整性检查
           fakeroot debian/rules binary-headers binary-generic binary-perarch skipabi=true skipmodule=true skipdbg=true do_skip_checks=true
 
       # 7. 精确提取 headers, image, modules 产物
