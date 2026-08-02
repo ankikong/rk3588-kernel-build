@@ -52,8 +52,7 @@ jobs:
             echo "警告：无法通过依赖关系提取具体内核包，回退到拉取默认的 linux 源码包"
             KERNEL_DEP="linux"
           else
-            # 关键修复：将已签名的包名转为 unsigned 的包名（例如：linux-image-6.8.0-136-generic -> linux-image-unsigned-6.8.0-136-generic）
-            # 这样才能强制 apt-get source 去拉取真实的 "linux" 源码包，而不是重签名包 "linux-signed"
+            # 将已签名的包名转为 unsigned 的包名，确保拉取包含完整编译规则的原始源码包
             KERNEL_DEP=$(echo "$KERNEL_DEP" | sed 's/linux-image-\([0-9]\)/linux-image-unsigned-\1/')
             echo "最新 generic 内核指向的真实源码包为: $KERNEL_DEP"
           fi
@@ -75,7 +74,6 @@ jobs:
         run: |
           KERNEL_DEP=$(apt-cache depends linux-image-generic | grep -o 'linux-image-[0-9]\+.*-generic' | head -n 1)
           if [ -n "$KERNEL_DEP" ]; then
-            # 转换为 unsigned 版本以拉取正确的构建依赖
             KERNEL_UNSIGNED_DEP=$(echo "$KERNEL_DEP" | sed 's/linux-image-\([0-9]\)/linux-image-unsigned-\1/')
             sudo apt-get build-dep -y "$KERNEL_UNSIGNED_DEP" || true
           fi
@@ -105,7 +103,7 @@ jobs:
             dpkg-dev \
             bc
 
-      # 5. 注入配置（此时有了完整的 kernel-source，该目录已包含模板文件及 annotations 脚本）
+      # 5. 限制构建架构并注入配置
       - name: Configure Kernel Options
         working-directory: kernel-source
         run: |
@@ -116,6 +114,17 @@ jobs:
           # 修改编译版本后缀，避免与系统原生内核冲突
           # sed -i 's/)/+custom-config)/' debian.master/changelog
           cat ../userpatches/comm.config >> custom.config
+
+          # ================== 核心修复 1: 限制只针对 amd64 生成配置 ==================
+          # 修改 Ubuntu 构建系统的架构模板文件，彻底排除 arm64, armhf, ppc64el 等
+          for config_path in debian.master/etc/kernelconfig debian/etc/kernelconfig; do
+            if [ -f "$config_path" ]; then
+              echo "正在修改 $config_path，设定 archs=amd64 ..."
+              echo 'archs="amd64"' > "$config_path"
+            fi
+          done
+          # ===========================================================================
+
           if [ -f ../custom.config ]; then
             echo "解析 custom.config 中..."
             while IFS='=' read -r key value || [ -n "$key" ]; do
@@ -154,16 +163,17 @@ jobs:
             exit 1
           fi
 
-          # 重新编译配置文件（由于这是真实的内核源码树，此处 genconfigs 规则已被正确支持）
+          # 重新编译配置文件，并加入 do_skip_checks=true 规避多架构验证机制的严格性静态检查
           fakeroot debian/rules clean
-          fakeroot debian/rules genconfigs
+          fakeroot debian/rules genconfigs do_skip_checks=true
 
       # 6. 编译内核二进制包
       - name: Build Kernel Packages
         working-directory: kernel-source
         run: |
           export CONCURRENCY_LEVEL=$(nproc)
-          fakeroot debian/rules binary-headers binary-generic binary-perarch skipabi=true skipmodule=true skipdbg=true
+          # 显式加入 do_skip_checks=true 以绕过未参与编译的其他架构静态完整性检查
+          fakeroot debian/rules binary-headers binary-generic binary-perarch skipabi=true skipmodule=true skipdbg=true do_skip_checks=true
 
       # 7. 精确提取 headers, image, modules 产物
       - name: Collect Debian Packages
