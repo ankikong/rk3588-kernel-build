@@ -52,7 +52,7 @@ jobs:
             echo "警告：无法通过依赖关系提取具体内核包，回退到拉取默认的 linux 源码包"
             KERNEL_DEP="linux"
           else
-            # 修复：将已签名的包名转为 unsigned 的包名（例如：linux-image-6.8.0-136-generic -> linux-image-unsigned-6.8.0-136-generic）
+            # 将已签名的包名转为 unsigned 的包名，确保拉取真实的 linux 源码包
             KERNEL_DEP=$(echo "$KERNEL_DEP" | sed 's/linux-image-\([0-9]\)/linux-image-unsigned-\1/')
             echo "最新 generic 内核指向的真实源码包为: $KERNEL_DEP"
           fi
@@ -103,7 +103,7 @@ jobs:
             dpkg-dev \
             bc
 
-      # 5. 限制构建架构、修剪 annotations 并注入配置
+      # 5. 限制构建架构、重写 annotations 头部字段并注入配置
       - name: Configure Kernel Options
         working-directory: kernel-source
         run: |
@@ -123,16 +123,17 @@ jobs:
             fi
           done
 
-          # ================== 核心修复 2: 修剪 annotations 中的 FLAVOUR 声明 ==================
-          # 通过 sed 命令过滤 annotations，只保留含有 amd64 的 Flavour。
-          # 这将阻止构建系统去非 native 架构下寻找 cross-compiler，从根本上避开 warning_partial 报错。
+          # ================== 核心修复：重写 annotations 头部字段 ==================
+          # 强行将单行空格分隔的多架构声明重写为只保留 amd64 极简声明。
+          # 这样可以从根本上阻止 kernelconfig 脚本循环非 native 架构并报缺交叉编译器的错误。
           for anno_path in debian.master/config/annotations debian/config/annotations; do
             if [ -f "$anno_path" ]; then
-              echo "正在修改 $anno_path，移除除 amd64 之外的所有 FLAVOUR 声明..."
-              sed -i '/^# FLAVOUR: / { /amd64/!d }' "$anno_path"
+              echo "正在重写 $anno_path 的 ARCH 与 FLAVOUR 声明..."
+              sed -i 's/^# ARCH: .*/# ARCH: amd64/' "$anno_path"
+              sed -i 's/^# FLAVOUR: .*/# FLAVOUR: amd64-generic/' "$anno_path"
             fi
           done
-          # ====================================================================================
+          # =========================================================================
 
           if [ -f ../custom.config ]; then
             echo "解析 custom.config 中..."
@@ -172,7 +173,7 @@ jobs:
             exit 1
           fi
 
-          # 重新编译配置文件，配合 skip_checks 跳过验证
+          # 重新编译配置文件，配合 do_skip_checks=true 绕过静态验证
           fakeroot debian/rules clean
           fakeroot debian/rules genconfigs do_skip_checks=true
 
