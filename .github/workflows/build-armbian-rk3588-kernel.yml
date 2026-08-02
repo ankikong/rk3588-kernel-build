@@ -35,15 +35,20 @@ permissions:
 
 env:
   BUILD_REPO: armbian/build
-  KERNEL_CONFIG_FRAGMENT_FILE: linux-${{ inputs.board }}-${{ inputs.kernel_branch }}.config
 
 jobs:
   build-kernel:
     name: 编译内核 (${{ inputs.board }} - ${{ inputs.kernel_branch }})
     runs-on: ubuntu-24.04-arm
     steps:
+      - name: 获取当前时间
+        id: get_time
+        run: |
+          echo "formatted_date=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H-%M')" >> $GITHUB_OUTPUT
+
       - name: 安装基础依赖
         run: |
+          echo ${{ steps.get_time.outputs.formatted_date }}
           sudo apt-get update
           sudo apt-get install -y git wget
 
@@ -87,8 +92,8 @@ jobs:
       - name: 上传到 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: kernel-${{ inputs.kernel_branch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          name: "Armbian RK3588 内核 (${{ inputs.board }}, ${{ inputs.kernel_branch }})"
+          tag_name: kernel-${{ inputs.kernel_branch }}-${{ steps.get_time.outputs.formatted_date }}-${{ github.run_attempt }}
+          name: "Armbian RK3588 内核 (${{ inputs.board }}, ${{ inputs.kernel_branch }}) - ${{ steps.get_time.outputs.formatted_date }}"
           body: |
             - 板子: ${{ inputs.board }}
             - 内核分支: ${{ inputs.kernel_branch }}
